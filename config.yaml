@@ -1,0 +1,9 @@
+dbtemplates:
+  blog:
+    template: '_template_blog'
+    buffer: 3
+    expire: 24
+  shop:
+    template: '_template_shop'
+    buffer: 2
+    expire: 48
