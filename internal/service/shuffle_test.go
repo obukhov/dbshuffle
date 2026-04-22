@@ -409,8 +409,8 @@ func TestDBRecord_PhysicalName(t *testing.T) {
 	buffer := DBRecord{ID: id, TemplateName: "blog"}
 	assigned := DBRecord{ID: id, TemplateName: "blog", DBName: &dbName}
 
-	assert.Equal(t, "blog_550e8400e29b41d4a716446655440000", buffer.physicalName())
-	assert.Equal(t, "my_db", assigned.physicalName())
+	assert.Equal(t, "blog_550e8400e29b41d4a716446655440000", buffer.PhysicalName())
+	assert.Equal(t, "my_db", assigned.PhysicalName())
 }
 
 // helper to get sql.ErrNoRows from sqlmock

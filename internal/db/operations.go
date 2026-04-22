@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"time"
 )
 
 type Operations struct {
@@ -16,6 +18,9 @@ func NewOperations(db *sql.DB) *Operations {
 
 // CopyDB creates dst as a full copy of src (schema + data).
 func (o *Operations) CopyDB(ctx context.Context, src, dst string) error {
+	start := time.Now()
+	slog.Debug("copying database", "src", src, "dst", dst)
+
 	if _, err := o.db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE `%s`", dst)); err != nil {
 		return fmt.Errorf("create database %s: %w", dst, err)
 	}
@@ -37,11 +42,16 @@ func (o *Operations) CopyDB(ctx context.Context, src, dst string) error {
 			return fmt.Errorf("copy table %s: %w", tbl, err)
 		}
 	}
+
+	slog.Info("database copied", "src", src, "dst", dst, "tables", len(tables), "duration", time.Since(start))
 	return nil
 }
 
 // RenameDB renames src to dst by moving all tables then dropping the empty src.
 func (o *Operations) RenameDB(ctx context.Context, src, dst string) error {
+	start := time.Now()
+	slog.Debug("renaming database", "src", src, "dst", dst)
+
 	if _, err := o.db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE `%s`", dst)); err != nil {
 		return fmt.Errorf("create database %s: %w", dst, err)
 	}
@@ -62,13 +72,20 @@ func (o *Operations) RenameDB(ctx context.Context, src, dst string) error {
 	if _, err := o.db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE `%s`", src)); err != nil {
 		return fmt.Errorf("drop database %s: %w", src, err)
 	}
+
+	slog.Info("database renamed", "src", src, "dst", dst, "tables", len(tables), "duration", time.Since(start))
 	return nil
 }
 
 // DropDB drops a database entirely.
 func (o *Operations) DropDB(ctx context.Context, name string) error {
+	slog.Debug("dropping database", "name", name)
 	_, err := o.db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", name))
-	return err
+	if err != nil {
+		return err
+	}
+	slog.Info("database dropped", "name", name)
+	return nil
 }
 
 func (o *Operations) listTables(ctx context.Context, dbName string) ([]string, error) {

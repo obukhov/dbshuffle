@@ -38,8 +38,8 @@ func (r *DBRecord) IsExpired(expireHours int) bool {
 	return t != nil && t.Before(time.Now())
 }
 
-// physicalName returns the current MySQL database name for this record.
-func (r *DBRecord) physicalName() string {
+// PhysicalName returns the current MySQL database name for this record.
+func (r *DBRecord) PhysicalName() string {
 	if r.DBName != nil {
 		return *r.DBName
 	}
@@ -156,7 +156,7 @@ func (s *ShuffleService) Assign(ctx context.Context, templateName, dbName string
 		return nil, err
 	}
 
-	if err := s.ops.RenameDB(ctx, rec.physicalName(), dbName); err != nil {
+	if err := s.ops.RenameDB(ctx, rec.PhysicalName(), dbName); err != nil {
 		return nil, fmt.Errorf("rename db: %w", err)
 	}
 
@@ -202,8 +202,8 @@ func (s *ShuffleService) Clean(ctx context.Context) (int, error) {
 
 	cleaned := 0
 	for _, r := range toClean {
-		if err := s.ops.DropDB(ctx, r.physicalName()); err != nil {
-			return cleaned, fmt.Errorf("drop %s: %w", r.physicalName(), err)
+		if err := s.ops.DropDB(ctx, r.PhysicalName()); err != nil {
+			return cleaned, fmt.Errorf("drop %s: %w", r.PhysicalName(), err)
 		}
 		if _, err := s.db.ExecContext(ctx,
 			"UPDATE `_dbshuffle`.`databases` SET deleted_at = ? WHERE id = ?", time.Now(), r.ID,
@@ -283,5 +283,3 @@ func scanRecord(rows *sql.Rows) (DBRecord, error) {
 	}
 	return r, nil
 }
-
-
