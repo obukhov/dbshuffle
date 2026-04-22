@@ -14,9 +14,10 @@ import (
 
 // mockOps implements dbOperations for testing.
 type mockOps struct {
-	copyDB   func(ctx context.Context, src, dst string) error
-	renameDB func(ctx context.Context, src, dst string) error
-	dropDB   func(ctx context.Context, name string) error
+	copyDB            func(ctx context.Context, src, dst string) error
+	renameDB          func(ctx context.Context, src, dst string) error
+	dropDB            func(ctx context.Context, name string) error
+	createDBFromPath  func(ctx context.Context, dst, path string) error
 }
 
 func (m *mockOps) CopyDB(ctx context.Context, src, dst string) error {
@@ -40,10 +41,17 @@ func (m *mockOps) DropDB(ctx context.Context, name string) error {
 	return nil
 }
 
+func (m *mockOps) CreateDBFromPath(ctx context.Context, dst, path string) error {
+	if m.createDBFromPath != nil {
+		return m.createDBFromPath(ctx, dst, path)
+	}
+	return nil
+}
+
 func testCfg() *config.Config {
 	return &config.Config{
 		DBTemplates: map[string]config.Template{
-			"blog": {Template: "_template_blog", Buffer: 3, Expire: 24},
+			"blog": {FromDB: "_template_blog", Buffer: 3, Expire: 24},
 		},
 	}
 }
@@ -384,6 +392,46 @@ func TestRefill_SkipsWhenBufferFull(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, copyCount)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRefill_FromPath(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	ops := &mockOps{}
+	svc := &ShuffleService{
+		db: db,
+		ops: ops,
+		cfg: &config.Config{
+			DBTemplates: map[string]config.Template{
+				"wiki": {FromPath: "/templates/wiki", Buffer: 2, Expire: 12},
+			},
+		},
+	}
+
+	mock.ExpectQuery(
+		"SELECT COUNT(*) FROM `_dbshuffle`.`databases` WHERE template_name = ? AND db_name IS NULL AND deleted_at IS NULL",
+	).WithArgs("wiki").WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	mock.ExpectExec(
+		"INSERT INTO `_dbshuffle`.`databases` (id, template_name, created_at) VALUES (?, ?, ?)",
+	).WithArgs(sqlmock.AnyArg(), "wiki", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	var pathsUsed []string
+	ops.createDBFromPath = func(_ context.Context, dst, path string) error {
+		pathsUsed = append(pathsUsed, path)
+		assert.True(t, strings.HasPrefix(dst, "wiki_"))
+		return nil
+	}
+
+	n, err := svc.Refill(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{"/templates/wiki"}, pathsUsed)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

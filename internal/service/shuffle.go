@@ -58,6 +58,7 @@ type dbOperations interface {
 	CopyDB(ctx context.Context, src, dst string) error
 	RenameDB(ctx context.Context, src, dst string) error
 	DropDB(ctx context.Context, name string) error
+	CreateDBFromPath(ctx context.Context, dst, path string) error
 }
 
 type ShuffleService struct {
@@ -260,8 +261,14 @@ func (s *ShuffleService) Refill(ctx context.Context) (int, error) {
 		for i := current; i < tmpl.Buffer; i++ {
 			id := uuid.New()
 			bufName := name + "_" + strings.ReplaceAll(id.String(), "-", "")
-			if err := s.ops.CopyDB(ctx, tmpl.Template, bufName); err != nil {
-				return created, fmt.Errorf("copy template %s: %w", name, err)
+			if tmpl.FromPath != "" {
+				if err := s.ops.CreateDBFromPath(ctx, bufName, tmpl.FromPath); err != nil {
+					return created, fmt.Errorf("create from path %s: %w", name, err)
+				}
+			} else {
+				if err := s.ops.CopyDB(ctx, tmpl.FromDB, bufName); err != nil {
+					return created, fmt.Errorf("copy template %s: %w", name, err)
+				}
 			}
 			if _, err := s.db.ExecContext(ctx,
 				"INSERT INTO `_dbshuffle`.`databases` (id, template_name, created_at) VALUES (?, ?, ?)",

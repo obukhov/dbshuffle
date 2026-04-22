@@ -8,9 +8,20 @@ import (
 )
 
 type Template struct {
-	Template string `yaml:"template"`
+	FromDB   string `yaml:"from_db"`
+	FromPath string `yaml:"from_path"`
 	Buffer   int    `yaml:"buffer"`
 	Expire   int    `yaml:"expire"` // hours
+}
+
+func (t Template) validate(name string) error {
+	if t.FromDB == "" && t.FromPath == "" {
+		return fmt.Errorf("template %q: one of from_db or from_path must be set", name)
+	}
+	if t.FromDB != "" && t.FromPath != "" {
+		return fmt.Errorf("template %q: from_db and from_path are mutually exclusive", name)
+	}
+	return nil
 }
 
 type Config struct {
@@ -27,6 +38,11 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.NewDecoder(f).Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	for name, tmpl := range cfg.DBTemplates {
+		if err := tmpl.validate(name); err != nil {
+			return nil, err
+		}
 	}
 	return &cfg, nil
 }
