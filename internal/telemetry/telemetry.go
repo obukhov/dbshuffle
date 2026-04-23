@@ -54,7 +54,7 @@ func LogHandler() slog.Handler { return otelLogHandler }
 //
 // Returns a shutdown function that flushes and stops all providers.
 func Setup(ctx context.Context) (func(context.Context) error, error) {
-	slog.Info("telemetry: env",
+	slog.Debug("telemetry: env",
 		"OTEL_TRACES_EXPORTER", os.Getenv("OTEL_TRACES_EXPORTER"),
 		"OTEL_METRICS_EXPORTER", os.Getenv("OTEL_METRICS_EXPORTER"),
 		"OTEL_LOGS_EXPORTER", os.Getenv("OTEL_LOGS_EXPORTER"),
