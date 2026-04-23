@@ -20,6 +20,7 @@ func NewShuffleHandler(svc *service.ShuffleService) *ShuffleHandler {
 func (h *ShuffleHandler) Routes(r chi.Router) {
 	r.Get("/status", h.status)
 	r.Post("/assign", h.assign)
+	r.Post("/reset", h.reset)
 	r.Post("/extend", h.extend)
 	r.Post("/clean", h.clean)
 	r.Post("/refill", h.refill)
@@ -56,6 +57,33 @@ func (h *ShuffleHandler) assign(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusServiceUnavailable)
 	case errors.Is(err, service.ErrAlreadyAssigned):
 		jsonError(w, err.Error(), http.StatusConflict)
+	case err != nil:
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+	default:
+		jsonOK(w, rec)
+	}
+}
+
+func (h *ShuffleHandler) reset(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Template string `json:"template"`
+		DBName   string `json:"db_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.Template == "" || body.DBName == "" {
+		jsonError(w, "template and db_name are required", http.StatusBadRequest)
+		return
+	}
+
+	rec, err := h.svc.Reset(r.Context(), body.Template, body.DBName)
+	switch {
+	case errors.Is(err, service.ErrUnknownTemplate):
+		jsonError(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, service.ErrNoBuffer):
+		jsonError(w, err.Error(), http.StatusServiceUnavailable)
 	case err != nil:
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 	default:

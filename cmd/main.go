@@ -71,6 +71,7 @@ func buildRoot() *cobra.Command {
 	root.AddCommand(
 		statusCmd(setup),
 		assignCmd(setup),
+		resetCmd(setup),
 		extendCmd(setup),
 		cleanCmd(setup),
 		refillCmd(setup),
@@ -138,6 +139,33 @@ func assignCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Com
 
 			expiresAt := rec.ExpiresAt(svc.ExpireHours(template))
 			slog.Info("command: assigned successfully", "db_name", *rec.DBName, "expires_at", expiresAt)
+			return nil
+		},
+	}
+}
+
+func resetCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset <template> <dbname>",
+		Short: "Drop the existing assignment (if any) and assign a fresh buffer copy",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			template, dbName := args[0], args[1]
+			slog.Info("command: resetting database", "template", template, "db_name", dbName)
+
+			svc, done, err := setup()
+			if err != nil {
+				return err
+			}
+			defer done()
+
+			rec, err := svc.Reset(context.Background(), template, dbName)
+			if err != nil {
+				return err
+			}
+
+			expiresAt := rec.ExpiresAt(svc.ExpireHours(template))
+			slog.Info("command: reset successfully", "db_name", *rec.DBName, "expires_at", expiresAt)
 			return nil
 		},
 	}

@@ -248,6 +248,34 @@ func (s *ShuffleService) Extend(ctx context.Context, templateName, dbName string
 	return &rec, nil
 }
 
+func (s *ShuffleService) Reset(ctx context.Context, templateName, dbName string) (*DBRecord, error) {
+	if _, ok := s.cfg.DBTemplates[templateName]; !ok {
+		return nil, ErrUnknownTemplate
+	}
+
+	var existing DBRecord
+	err := s.db.QueryRowContext(ctx,
+		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+		dbName,
+	).Scan(&existing.ID, &existing.TemplateName, &existing.DBName, &existing.CreatedAt, &existing.AssignedAt, &existing.LastExtendedAt, &existing.DeletedAt)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("check existing assignment: %w", err)
+	}
+	if err == nil {
+		if err := s.ops.DropDB(ctx, existing.PhysicalName()); err != nil {
+			return nil, fmt.Errorf("drop existing db: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE `_dbshuffle`.`databases` SET deleted_at = ? WHERE id = ?",
+			time.Now(), existing.ID,
+		); err != nil {
+			return nil, fmt.Errorf("soft-delete record: %w", err)
+		}
+	}
+
+	return s.Assign(ctx, templateName, dbName)
+}
+
 func (s *ShuffleService) Refill(ctx context.Context) (int, error) {
 	created := 0
 	for name, tmpl := range s.cfg.DBTemplates {

@@ -33,14 +33,18 @@ docker-compose.yml           MySQL 8 service for local development
 # config.yaml
 dbtemplates:
   blog:
-    template: '_template_blog'   # name of the source MySQL database to copy
+    from_db: '_template_blog'    # copy from an existing MySQL database
     buffer: 3                    # number of copies to keep ready
     expire: 24                   # hours before an assigned database is considered expired
   shop:
-    template: '_template_shop'
+    from_path: 'dumps/shop'      # copy from a directory of SQL files (mutually exclusive with from_db)
     buffer: 2
     expire: 48
 ```
+
+Each template requires exactly one source — `from_db` or `from_path`, not both.
+
+**`from_path`** points to a directory. dbshuffle reads all `.sql` and `.sql.gz` files in that directory (in sorted order) and executes them in a single transaction to seed the new database. Plain `.sql` and gzip-compressed `.sql.gz` files can be mixed freely.
 
 ## Prerequisites
 
@@ -115,6 +119,17 @@ Errors:
 - `unknown template` — template name not in config
 - `no buffer databases available` — buffer is empty; run `refill` first
 - `database name already assigned` — `<dbname>` is already in use
+
+#### `reset <template> <dbname>`
+Drop the existing `<dbname>` assignment (if one exists) and assign a fresh buffer copy under the same name. If `<dbname>` is not currently assigned, behaves identically to `assign`.
+
+```bash
+dbshuffle reset blog myfeature_test
+```
+
+Errors:
+- `unknown template` — template name not in config
+- `no buffer databases available` — buffer is empty; run `refill` first
 
 #### `refill`
 Create buffer copies for all templates until each reaches its configured `buffer` size. Skips templates that are already at capacity.
@@ -206,6 +221,34 @@ HTTP status codes:
 | `409` | Database name already assigned |
 | `503` | No buffer databases available |
 
+### `POST /reset`
+
+Drop the existing assignment for `db_name` (if any) and assign a fresh buffer copy under the same name.
+
+```bash
+curl -X POST http://localhost:8080/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"template": "blog", "db_name": "myfeature_test"}'
+```
+
+```json
+{
+  "id": "772a0622-a4bd-63f6-c938-668877662222",
+  "template_name": "blog",
+  "db_name": "myfeature_test",
+  "created_at": "2026-04-22T11:00:00Z",
+  "assigned_at": "2026-04-22T12:00:00Z",
+  "last_extended_at": "2026-04-22T12:00:00Z"
+}
+```
+
+HTTP status codes:
+| Code | Meaning |
+|---|---|
+| `200` | Reset and assigned successfully |
+| `404` | Unknown template |
+| `503` | No buffer databases available |
+
 ### `POST /clean`
 
 ```bash
@@ -266,6 +309,7 @@ The physical MySQL database name of a buffer copy is derived as `<template_name>
 | `make run-server` | Run the HTTP server via `go run` |
 | `make status` | Print current status |
 | `make assign TEMPLATE=x DB=y` | Assign template `x` to database name `y` |
+| `make reset TEMPLATE=x DB=y` | Drop existing assignment and assign a fresh copy |
 | `make clean` | Drop expired databases |
 | `make refill` | Fill buffers up to configured size |
 | `make db-up` | Start MySQL in Docker |

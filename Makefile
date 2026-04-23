@@ -10,6 +10,9 @@ status:
 assign:
 	go run ./cmd assign $(TEMPLATE) $(DB)
 
+reset:
+	go run ./cmd reset $(TEMPLATE) $(DB)
+
 extend:
 	go run ./cmd extend $(TEMPLATE) $(DB)
 
@@ -31,4 +34,4 @@ db-down:
 db-shell:
 	docker compose exec mysql mysql -uroot -psecret
 
-.PHONY: build run-server status assign extend clean refill tidy db-up db-down db-shell
+.PHONY: build run-server status assign reset extend clean refill tidy db-up db-down db-shell

@@ -215,6 +215,156 @@ func TestAssign_NoBuffer(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// -- Reset -------------------------------------------------------------------
+
+func TestReset_UnknownTemplate(t *testing.T) {
+	svc, mock, _ := newTestService(t)
+
+	_, err := svc.Reset(context.Background(), "nonexistent", "mydb")
+
+	assert.ErrorIs(t, err, ErrUnknownTemplate)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReset_NoExistingAssignment(t *testing.T) {
+	svc, mock, ops := newTestService(t)
+
+	const (
+		recID    = "550e8400-e29b-41d4-a716-446655440000"
+		dbName   = "myfeature_test"
+		template = "blog"
+	)
+	createdAt := time.Now().Add(-5 * time.Minute)
+
+	var renamedFrom, renamedTo string
+	ops.renameDB = func(_ context.Context, src, dst string) error {
+		renamedFrom, renamedTo = src, dst
+		return nil
+	}
+
+	// Reset: no existing assignment
+	mock.ExpectQuery(
+		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+	).WithArgs(dbName).WillReturnRows(recordCols()) // empty → no existing
+
+	// Assign path
+	mock.ExpectBegin()
+	mock.ExpectQuery(
+		"SELECT COUNT(*) FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+	).WithArgs(dbName).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectQuery(
+		"SELECT id, created_at FROM `_dbshuffle`.`databases` WHERE template_name = ? AND db_name IS NULL AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1 FOR UPDATE",
+	).WithArgs(template).WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(recID, createdAt))
+	mock.ExpectCommit()
+	mock.ExpectExec(
+		"UPDATE `_dbshuffle`.`databases` SET db_name = ?, assigned_at = ?, last_extended_at = ? WHERE id = ?",
+	).WithArgs(dbName, sqlmock.AnyArg(), sqlmock.AnyArg(), recID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	rec, err := svc.Reset(context.Background(), template, dbName)
+
+	require.NoError(t, err)
+	assert.Equal(t, dbName, *rec.DBName)
+	assert.Equal(t, template+"_"+strings.ReplaceAll(recID, "-", ""), renamedFrom)
+	assert.Equal(t, dbName, renamedTo)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReset_DropsExistingAndAssignsFresh(t *testing.T) {
+	svc, mock, ops := newTestService(t)
+
+	const (
+		oldRecID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		newRecID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		dbName   = "myfeature_test"
+		template = "blog"
+	)
+	now := time.Now()
+
+	var droppedDB string
+	ops.dropDB = func(_ context.Context, name string) error {
+		droppedDB = name
+		return nil
+	}
+	var renamedTo string
+	ops.renameDB = func(_ context.Context, _, dst string) error {
+		renamedTo = dst
+		return nil
+	}
+
+	// Reset: existing assignment found
+	mock.ExpectQuery(
+		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+	).WithArgs(dbName).WillReturnRows(
+		recordCols().AddRow(oldRecID, template, dbName, now.Add(-2*time.Hour), now.Add(-1*time.Hour), now.Add(-1*time.Hour), nil),
+	)
+	// Drop old + soft-delete
+	mock.ExpectExec(
+		"UPDATE `_dbshuffle`.`databases` SET deleted_at = ? WHERE id = ?",
+	).WithArgs(sqlmock.AnyArg(), oldRecID).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Assign path
+	mock.ExpectBegin()
+	mock.ExpectQuery(
+		"SELECT COUNT(*) FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+	).WithArgs(dbName).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectQuery(
+		"SELECT id, created_at FROM `_dbshuffle`.`databases` WHERE template_name = ? AND db_name IS NULL AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1 FOR UPDATE",
+	).WithArgs(template).WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(newRecID, now.Add(-10*time.Minute)))
+	mock.ExpectCommit()
+	mock.ExpectExec(
+		"UPDATE `_dbshuffle`.`databases` SET db_name = ?, assigned_at = ?, last_extended_at = ? WHERE id = ?",
+	).WithArgs(dbName, sqlmock.AnyArg(), sqlmock.AnyArg(), newRecID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	rec, err := svc.Reset(context.Background(), template, dbName)
+
+	require.NoError(t, err)
+	assert.Equal(t, dbName, *rec.DBName)
+	assert.Equal(t, newRecID, rec.ID)
+	assert.Equal(t, dbName, droppedDB) // physical name of assigned record = dbName
+	assert.Equal(t, dbName, renamedTo)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReset_NoBuffer(t *testing.T) {
+	svc, mock, ops := newTestService(t)
+
+	const (
+		oldRecID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		dbName   = "myfeature_test"
+		template = "blog"
+	)
+	now := time.Now()
+
+	ops.dropDB = func(_ context.Context, _ string) error { return nil }
+
+	// Reset: existing assignment found
+	mock.ExpectQuery(
+		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+	).WithArgs(dbName).WillReturnRows(
+		recordCols().AddRow(oldRecID, template, dbName, now.Add(-2*time.Hour), now.Add(-1*time.Hour), now.Add(-1*time.Hour), nil),
+	)
+	mock.ExpectExec(
+		"UPDATE `_dbshuffle`.`databases` SET deleted_at = ? WHERE id = ?",
+	).WithArgs(sqlmock.AnyArg(), oldRecID).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Assign path: buffer empty
+	mock.ExpectBegin()
+	mock.ExpectQuery(
+		"SELECT COUNT(*) FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
+	).WithArgs(dbName).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectQuery(
+		"SELECT id, created_at FROM `_dbshuffle`.`databases` WHERE template_name = ? AND db_name IS NULL AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1 FOR UPDATE",
+	).WithArgs(template).WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"})) // empty
+	mock.ExpectRollback()
+
+	_, err := svc.Reset(context.Background(), template, dbName)
+
+	assert.ErrorIs(t, err, ErrNoBuffer)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // -- Clean -------------------------------------------------------------------
 
 func TestClean_DropsOnlyExpiredDatabases(t *testing.T) {
