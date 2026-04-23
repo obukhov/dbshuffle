@@ -12,7 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
+
+var tracer = otel.Tracer("github.com/obukhov/dbshuffle/internal/db")
 
 type Operations struct {
 	db *sql.DB
@@ -23,7 +29,17 @@ func NewOperations(db *sql.DB) *Operations {
 }
 
 // CopyDB creates dst as a full copy of src (schema + data).
-func (o *Operations) CopyDB(ctx context.Context, src, dst string) error {
+func (o *Operations) CopyDB(ctx context.Context, src, dst string) (err error) {
+	ctx, span := tracer.Start(ctx, "CopyDB")
+	span.SetAttributes(attribute.String("db.system", "mysql"), attribute.String("src", src), attribute.String("dst", dst))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	start := time.Now()
 	slog.Debug("copying database", "src", src, "dst", dst)
 
@@ -54,7 +70,17 @@ func (o *Operations) CopyDB(ctx context.Context, src, dst string) error {
 }
 
 // RenameDB renames src to dst by moving all tables then dropping the empty src.
-func (o *Operations) RenameDB(ctx context.Context, src, dst string) error {
+func (o *Operations) RenameDB(ctx context.Context, src, dst string) (err error) {
+	ctx, span := tracer.Start(ctx, "RenameDB")
+	span.SetAttributes(attribute.String("db.system", "mysql"), attribute.String("src", src), attribute.String("dst", dst))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	start := time.Now()
 	slog.Debug("renaming database", "src", src, "dst", dst)
 
@@ -84,9 +110,19 @@ func (o *Operations) RenameDB(ctx context.Context, src, dst string) error {
 }
 
 // DropDB drops a database entirely.
-func (o *Operations) DropDB(ctx context.Context, name string) error {
+func (o *Operations) DropDB(ctx context.Context, name string) (err error) {
+	ctx, span := tracer.Start(ctx, "DropDB")
+	span.SetAttributes(attribute.String("db.system", "mysql"), attribute.String("name", name))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	slog.Debug("dropping database", "name", name)
-	_, err := o.db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", name))
+	_, err = o.db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", name))
 	if err != nil {
 		return err
 	}
@@ -98,7 +134,17 @@ func (o *Operations) DropDB(ctx context.Context, name string) error {
 // line by line, executing each complete statement as it is found — all inside a single
 // transaction. CREATE DATABASE itself is outside the transaction because MySQL DDL causes
 // an implicit commit.
-func (o *Operations) CreateDBFromPath(ctx context.Context, dst, path string) error {
+func (o *Operations) CreateDBFromPath(ctx context.Context, dst, path string) (err error) {
+	ctx, span := tracer.Start(ctx, "CreateDBFromPath")
+	span.SetAttributes(attribute.String("db.system", "mysql"), attribute.String("dst", dst), attribute.String("path", path))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	start := time.Now()
 	slog.Debug("creating database from path", "dst", dst, "path", path)
 

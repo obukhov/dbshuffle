@@ -8,10 +8,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
 
 	"github.com/obukhov/dbshuffle/internal/config"
 	dbops "github.com/obukhov/dbshuffle/internal/db"
 )
+
+var tracer = otel.Tracer("github.com/obukhov/dbshuffle/internal/service")
+var meter = otel.Meter("github.com/obukhov/dbshuffle/internal/service")
 
 type DBRecord struct {
 	ID             string     `json:"id"`
@@ -71,12 +78,83 @@ func NewShuffleService(db *sql.DB, cfg *config.Config) *ShuffleService {
 	return &ShuffleService{db: db, ops: dbops.NewOperations(db), cfg: cfg}
 }
 
+// RegisterMetrics registers observable gauges for buffer and assigned database counts
+// per template. Both are observed in a single query per collection cycle.
+func (s *ShuffleService) RegisterMetrics() error {
+	bufferGauge, err := meter.Int64ObservableGauge("dbshuffle.buffer.size",
+		otelmetric.WithDescription("Number of ready buffer copies per template"),
+		otelmetric.WithUnit("{databases}"),
+	)
+	if err != nil {
+		return fmt.Errorf("create buffer gauge: %w", err)
+	}
+	assignedGauge, err := meter.Int64ObservableGauge("dbshuffle.assigned.size",
+		otelmetric.WithDescription("Number of assigned databases per template"),
+		otelmetric.WithUnit("{databases}"),
+	)
+	if err != nil {
+		return fmt.Errorf("create assigned gauge: %w", err)
+	}
+
+	_, err = meter.RegisterCallback(func(ctx context.Context, o otelmetric.Observer) error {
+		rows, err := s.db.QueryContext(ctx,
+			"SELECT template_name,"+
+				" SUM(CASE WHEN db_name IS NULL THEN 1 ELSE 0 END),"+
+				" SUM(CASE WHEN db_name IS NOT NULL THEN 1 ELSE 0 END)"+
+				" FROM `_dbshuffle`.`databases` WHERE deleted_at IS NULL GROUP BY template_name",
+		)
+		if err != nil {
+			return fmt.Errorf("observe gauges: %w", err)
+		}
+		defer rows.Close()
+
+		seen := make(map[string]struct{})
+		for rows.Next() {
+			var tmpl string
+			var buf, assigned int64
+			if err := rows.Scan(&tmpl, &buf, &assigned); err != nil {
+				return fmt.Errorf("scan gauge row: %w", err)
+			}
+			attrs := otelmetric.WithAttributes(attribute.String("template", tmpl))
+			o.ObserveInt64(bufferGauge, buf, attrs)
+			o.ObserveInt64(assignedGauge, assigned, attrs)
+			seen[tmpl] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("gauge rows error: %w", err)
+		}
+		// Emit zero for templates that have no rows yet.
+		for name := range s.cfg.DBTemplates {
+			if _, ok := seen[name]; !ok {
+				attrs := otelmetric.WithAttributes(attribute.String("template", name))
+				o.ObserveInt64(bufferGauge, 0, attrs)
+				o.ObserveInt64(assignedGauge, 0, attrs)
+			}
+		}
+		return nil
+	}, bufferGauge, assignedGauge)
+	if err != nil {
+		return fmt.Errorf("register gauge callback: %w", err)
+	}
+	return nil
+}
+
 func (s *ShuffleService) ExpireHours(templateName string) int {
 	return s.cfg.DBTemplates[templateName].Expire
 }
 
-func (s *ShuffleService) Status(ctx context.Context) ([]StatusReport, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *ShuffleService) Status(ctx context.Context) (reports []StatusReport, err error) {
+	ctx, span := tracer.Start(ctx, "Status")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	var rows *sql.Rows
+	rows, err = s.db.QueryContext(ctx,
 		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE deleted_at IS NULL ORDER BY template_name, created_at",
 	)
 	if err != nil {
@@ -106,18 +184,28 @@ func (s *ShuffleService) Status(ctx context.Context) ([]StatusReport, error) {
 			rep.Assigned = append(rep.Assigned, r)
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 
-	reports := make([]StatusReport, 0, len(byTemplate))
+	reports = make([]StatusReport, 0, len(byTemplate))
 	for _, r := range byTemplate {
 		reports = append(reports, *r)
 	}
 	return reports, nil
 }
 
-func (s *ShuffleService) Assign(ctx context.Context, templateName, dbName string) (*DBRecord, error) {
+func (s *ShuffleService) Assign(ctx context.Context, templateName, dbName string) (result *DBRecord, err error) {
+	ctx, span := tracer.Start(ctx, "Assign")
+	span.SetAttributes(attribute.String("template", templateName), attribute.String("db_name", dbName))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	tmpl, ok := s.cfg.DBTemplates[templateName]
 	if !ok {
 		return nil, ErrUnknownTemplate
@@ -177,8 +265,18 @@ func (s *ShuffleService) Assign(ctx context.Context, templateName, dbName string
 	return &rec, nil
 }
 
-func (s *ShuffleService) Clean(ctx context.Context) (int, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *ShuffleService) Clean(ctx context.Context) (cleaned int, err error) {
+	ctx, span := tracer.Start(ctx, "Clean")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	var rows *sql.Rows
+	rows, err = s.db.QueryContext(ctx,
 		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE db_name IS NOT NULL AND deleted_at IS NULL",
 	)
 	if err != nil {
@@ -197,11 +295,10 @@ func (s *ShuffleService) Clean(ctx context.Context) (int, error) {
 			toClean = append(toClean, r)
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return 0, err
 	}
 
-	cleaned := 0
 	for _, r := range toClean {
 		if err := s.ops.DropDB(ctx, r.PhysicalName()); err != nil {
 			return cleaned, fmt.Errorf("drop %s: %w", r.PhysicalName(), err)
@@ -216,7 +313,17 @@ func (s *ShuffleService) Clean(ctx context.Context) (int, error) {
 	return cleaned, nil
 }
 
-func (s *ShuffleService) Extend(ctx context.Context, templateName, dbName string) (*DBRecord, error) {
+func (s *ShuffleService) Extend(ctx context.Context, templateName, dbName string) (result *DBRecord, err error) {
+	ctx, span := tracer.Start(ctx, "Extend")
+	span.SetAttributes(attribute.String("template", templateName), attribute.String("db_name", dbName))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	if _, ok := s.cfg.DBTemplates[templateName]; !ok {
 		return nil, ErrUnknownTemplate
 	}
@@ -248,13 +355,23 @@ func (s *ShuffleService) Extend(ctx context.Context, templateName, dbName string
 	return &rec, nil
 }
 
-func (s *ShuffleService) Reset(ctx context.Context, templateName, dbName string) (*DBRecord, error) {
+func (s *ShuffleService) Reset(ctx context.Context, templateName, dbName string) (result *DBRecord, err error) {
+	ctx, span := tracer.Start(ctx, "Reset")
+	span.SetAttributes(attribute.String("template", templateName), attribute.String("db_name", dbName))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	if _, ok := s.cfg.DBTemplates[templateName]; !ok {
 		return nil, ErrUnknownTemplate
 	}
 
 	var existing DBRecord
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		"SELECT id, template_name, db_name, created_at, assigned_at, last_extended_at, deleted_at FROM `_dbshuffle`.`databases` WHERE db_name = ? AND deleted_at IS NULL",
 		dbName,
 	).Scan(&existing.ID, &existing.TemplateName, &existing.DBName, &existing.CreatedAt, &existing.AssignedAt, &existing.LastExtendedAt, &existing.DeletedAt)
@@ -276,8 +393,16 @@ func (s *ShuffleService) Reset(ctx context.Context, templateName, dbName string)
 	return s.Assign(ctx, templateName, dbName)
 }
 
-func (s *ShuffleService) Refill(ctx context.Context) (int, error) {
-	created := 0
+func (s *ShuffleService) Refill(ctx context.Context) (created int, err error) {
+	ctx, span := tracer.Start(ctx, "Refill")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	for name, tmpl := range s.cfg.DBTemplates {
 		var current int
 		if err := s.db.QueryRowContext(ctx,

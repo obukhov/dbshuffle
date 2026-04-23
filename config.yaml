@@ -1,9 +1,9 @@
 dbtemplates:
   blog:
     from_db: "_template_blog"
-    buffer: 3
+    buffer: 5
     expire: 24
   shop:
     from_path: "templates/shop"
-    buffer: 2
+    buffer: 5
     expire: 48
