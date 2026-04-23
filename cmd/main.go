@@ -10,14 +10,31 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/joho/godotenv"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/obukhov/dbshuffle/internal/config"
 	"github.com/obukhov/dbshuffle/internal/db"
 	"github.com/obukhov/dbshuffle/internal/handler"
 	"github.com/obukhov/dbshuffle/internal/service"
+	"github.com/obukhov/dbshuffle/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
 func main() {
+	_ = godotenv.Load(".env.local")
+	ctx := context.Background()
+	otelShutdown, err := telemetry.Setup(ctx)
+	if err != nil {
+		slog.Error("failed to initialize telemetry", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := otelShutdown(context.Background()); err != nil {
+			slog.Error("telemetry shutdown error", "err", err)
+		}
+	}()
+
 	if err := buildRoot().Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -39,7 +56,11 @@ func buildRoot() *cobra.Command {
 			if verbose {
 				level = slog.LevelDebug
 			}
-			slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+			var h slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+			if otelH := telemetry.LogHandler(); otelH != nil {
+				h = &fanoutHandler{primary: h, secondary: otelH}
+			}
+			slog.SetDefault(slog.New(h))
 		},
 	}
 
@@ -262,6 +283,10 @@ func serverCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Com
 			}
 			defer done()
 
+			if err := svc.RegisterMetrics(); err != nil {
+				return fmt.Errorf("register metrics: %w", err)
+			}
+
 			go func() {
 				slog.Info("command: background refill started", "period", refillPeriod)
 				ticker := time.NewTicker(refillPeriod)
@@ -284,8 +309,13 @@ func serverCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Com
 			r.Use(middleware.Recoverer)
 			handler.NewShuffleHandler(svc).Routes(r)
 
+			httpHandler := otelhttp.NewHandler(r, "http.server",
+				otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+					return r.Method + " " + r.URL.Path
+				}),
+			)
 			slog.Info("command: server listening", "addr", addr)
-			return http.ListenAndServe(addr, r)
+			return http.ListenAndServe(addr, httpHandler)
 		},
 	}
 
@@ -329,6 +359,38 @@ func (e *slogEntry) Panic(v interface{}, stack []byte) {
 		"panic", v,
 		"stack", string(stack),
 	)
+}
+
+// fanoutHandler writes each log record to both primary and secondary handlers.
+// Enabled is delegated to primary so both outputs share the same level filter.
+type fanoutHandler struct {
+	primary   slog.Handler
+	secondary slog.Handler
+}
+
+func (f *fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return f.primary.Enabled(ctx, level)
+}
+
+func (f *fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	if err := f.primary.Handle(ctx, r); err != nil {
+		return err
+	}
+	return f.secondary.Handle(ctx, r)
+}
+
+func (f *fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &fanoutHandler{
+		primary:   f.primary.WithAttrs(attrs),
+		secondary: f.secondary.WithAttrs(attrs),
+	}
+}
+
+func (f *fanoutHandler) WithGroup(name string) slog.Handler {
+	return &fanoutHandler{
+		primary:   f.primary.WithGroup(name),
+		secondary: f.secondary.WithGroup(name),
+	}
 }
 
 func envOr(key, fallback string) string {
