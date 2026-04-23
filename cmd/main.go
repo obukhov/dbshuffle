@@ -271,11 +271,12 @@ func serverCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Com
 	var (
 		addr         string
 		refillPeriod time.Duration
+		refill       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "server",
-		Short: "Start the HTTP server with background buffer refill",
+		Short: "Start the HTTP server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, done, err := setup()
 			if err != nil {
@@ -287,22 +288,24 @@ func serverCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Com
 				return fmt.Errorf("register metrics: %w", err)
 			}
 
-			go func() {
-				slog.Info("command: background refill started", "period", refillPeriod)
-				ticker := time.NewTicker(refillPeriod)
-				defer ticker.Stop()
-				for range ticker.C {
-					slog.Debug("command: running scheduled refill")
-					n, err := svc.Refill(context.Background())
-					if err != nil {
-						slog.Error("command: scheduled refill failed", "err", err)
-						continue
+			if refill {
+				go func() {
+					slog.Info("command: background refill started", "period", refillPeriod)
+					ticker := time.NewTicker(refillPeriod)
+					defer ticker.Stop()
+					for range ticker.C {
+						slog.Debug("command: running scheduled refill")
+						n, err := svc.Refill(context.Background())
+						if err != nil {
+							slog.Error("command: scheduled refill failed", "err", err)
+							continue
+						}
+						if n > 0 {
+							slog.Info("command: scheduled refill complete", "created", n)
+						}
 					}
-					if n > 0 {
-						slog.Info("command: scheduled refill complete", "created", n)
-					}
-				}
-			}()
+				}()
+			}
 
 			r := chi.NewRouter()
 			r.Use(middleware.RequestLogger(&slogFormatter{}))
@@ -320,6 +323,7 @@ func serverCmd(setup func() (*service.ShuffleService, func(), error)) *cobra.Com
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", envOr("ADDR", ":8080"), "listen address")
+	cmd.Flags().BoolVar(&refill, "refill", false, "enable background buffer refill")
 	cmd.Flags().DurationVar(&refillPeriod, "refill-period", time.Minute, "how often to check and refill buffers")
 	return cmd
 }
