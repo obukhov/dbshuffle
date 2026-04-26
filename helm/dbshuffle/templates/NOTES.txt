@@ -1,0 +1,10 @@
+dbshuffle deployed successfully.
+
+Server (ClusterIP on port {{ .Values.service.port }}):
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "dbshuffle.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://127.0.0.1:{{ .Values.service.port }}/status
+
+CronJobs:
+{{- range $name, $job := .Values.cronjobs }}
+  {{ include "dbshuffle.fullname" $ }}-{{ $name }}  ({{ $job.schedule }})
+{{- end }}

@@ -1,0 +1,105 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/obukhov/dbshuffle
+  pullPolicy: IfNotPresent
+  tag: "v0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# WARNING: dbshuffle has no built-in authentication. Only expose it via ingress
+# or HTTPRoute inside a trusted network, behind an auth proxy, or with network policies.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+# WARNING: same auth caveat applies — HTTPRoute exposes all endpoints publicly.
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+    - name: gateway
+      sectionName: http
+      # namespace: default
+  hostnames:
+    - chart-example.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+
+resources: {}
+
+livenessProbe:
+  httpGet:
+    path: /status
+    port: http
+readinessProbe:
+  httpGet:
+    path: /status
+    port: http
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+volumes: []
+volumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# dbshuffle config.yaml mounted into the pod
+config: |
+  dbtemplates: {}
+
+# Environment variables for MySQL connection and other settings
+env: []
+  # - name: MYSQL_HOST
+  #   value: "mysql"
+  # - name: MYSQL_PORT
+  #   value: "3306"
+  # - name: MYSQL_USER
+  #   value: "root"
+  # - name: MYSQL_PASSWORD
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: mysql-secret
+  #       key: password
+
+cronjobs:
+  refill:
+    schedule: "* * * * *"
+    command: ["dbshuffle", "refill"]
+  clean:
+    schedule: "0 * * * *"
+    command: ["dbshuffle", "clean"]
