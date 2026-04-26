@@ -30,7 +30,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: {{ $name }}
-              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
               imagePullPolicy: {{ $.Values.image.pullPolicy }}
               command: {{ toJson $job.command }}
               args: ["--config", "/etc/dbshuffle/config.yaml"]

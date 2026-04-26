@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/obukhov/dbshuffle
   pullPolicy: IfNotPresent
-  tag: "0.1.2"
+  tag: "0.0.0" # To be replaced by github action
 
 imagePullSecrets: []
 nameOverride: ""

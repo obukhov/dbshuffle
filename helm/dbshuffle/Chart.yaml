@@ -2,5 +2,5 @@ apiVersion: v2
 name: dbshuffle
 description: Helm chart for dbshuffle — MySQL database pool manager
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.0.0 # To be replaced by github action
+appVersion: "0.0.0" # To be replaced by github action

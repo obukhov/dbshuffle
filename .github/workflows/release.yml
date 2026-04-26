@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
   REGISTRY: ghcr.io
@@ -77,8 +77,8 @@ jobs:
 
       - name: Package Helm chart
         run: |
-          VERSION=${{ github.ref_name }}
-          CHART_VERSION=${VERSION#v}
+          VERSION=${{ steps.meta.outputs.version }}
+          CHART_VERSION=${VERSION}
           # Stamp appVersion (the app image tag) and chart version
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" helm/dbshuffle/Chart.yaml
           sed -i "s/^version:.*/version: ${CHART_VERSION}/" helm/dbshuffle/Chart.yaml
