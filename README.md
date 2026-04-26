@@ -2,6 +2,21 @@
 
 dbshuffle pre-creates copies of MySQL database templates so they can be assigned to a name instantly — without waiting for a full copy at request time. Useful for test environments where each test run needs a fresh, isolated database.
 
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Project structure](#project-structure)
+- [Configuration](#configuration)
+- [Observability](#observability)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [CLI reference](#cli-reference)
+- [HTTP API](#http-api)
+- [Helm chart](#helm-chart)
+- [Docker / local development](#docker--local-development)
+- [Management database](#management-database)
+- [Makefile targets](#makefile-targets)
+
 ## How it works
 
 1. You define one or more **templates** — existing MySQL databases that serve as the source of truth.
@@ -127,6 +142,20 @@ All flags can be set via environment variables as well.
 | `--db-user` | `DB_USER` | `root` | MySQL user |
 | `--db-password` | `DB_PASSWORD` | _(empty)_ | MySQL password |
 | `--config` | — | `config.yaml` | Path to config file |
+
+### OpenTelemetry env vars
+
+OTEL is configured entirely through env vars (no flags). See the [Observability](#observability) section for full details.
+
+| Env var | Default | Description |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP endpoint; setting this auto-enables `otlp` for all signals |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Transport: `grpc` or `http/protobuf` |
+| `OTEL_TRACES_EXPORTER` | `none` | Trace exporter: `otlp` \| `stdout` \| `none` |
+| `OTEL_METRICS_EXPORTER` | same as traces | Metric exporter: `otlp` \| `stdout` \| `none` |
+| `OTEL_LOGS_EXPORTER` | same as traces | Log exporter: `otlp` \| `stdout` \| `none` |
+| `OTEL_SERVICE_NAME` | `dbshuffle` | Service name attached to all signals |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60s` | How often metrics are collected and exported |
 
 ### Commands
 
@@ -377,7 +406,7 @@ config: |
       buffer: 3
       expire: 24
     shop:
-      from_db: '_template_shop'
+      from_path: 'dumps/shop'
       buffer: 2
       expire: 48
 ```
