@@ -19,7 +19,7 @@ dbshuffle pre-creates copies of MySQL database templates so they can be assigned
 
 ## How it works
 
-1. You define one or more **templates** — existing MySQL databases that serve as the source of truth.
+1. You define one or more **templates** — existing MySQL databases (or a folder with dump) that serve as the source of truth.
 2. dbshuffle maintains a **buffer** of ready copies for each template (named `<template>_<uuid>`).
 3. When you **assign** a template to a name, one buffered copy is instantly renamed to that name.
 4. Assigned databases **expire** after a configurable number of hours. Running **clean** drops them.

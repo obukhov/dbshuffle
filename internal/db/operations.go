@@ -75,8 +75,13 @@ func (o *Operations) CopyDB(ctx context.Context, src, dst string) (err error) {
 		); err != nil {
 			return fmt.Errorf("create table %s: %w", tbl, err)
 		}
+		cols, err := o.listRegularColumns(ctx, src, tbl)
+		if err != nil {
+			return err
+		}
+		colList := "`" + strings.Join(cols, "`, `") + "`"
 		if _, err := conn.ExecContext(ctx,
-			fmt.Sprintf("INSERT INTO `%s`.`%s` SELECT * FROM `%s`.`%s`", dst, tbl, src, tbl),
+			fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) SELECT %s FROM `%s`.`%s`", dst, tbl, colList, colList, src, tbl),
 		); err != nil {
 			return fmt.Errorf("copy table data %s: %w", tbl, err)
 		}
@@ -231,54 +236,69 @@ func (o *Operations) copyViews(ctx context.Context, conn *sql.Conn, src, dst str
 	return len(views), nil
 }
 
-// copyTriggers copies all triggers from src to dst. Triggers reference tables
-// by short name, so executing under "USE dst" is sufficient to bind them to the
-// new database. Returns the number of triggers copied.
-func (o *Operations) copyTriggers(ctx context.Context, conn *sql.Conn, src, dst string) (int, error) {
+type triggerDef struct {
+	name, createStmt string
+}
+
+// loadTriggers returns the CREATE TRIGGER DDL for every trigger in dbName.
+func (o *Operations) loadTriggers(ctx context.Context, dbName string) ([]triggerDef, error) {
 	rows, err := o.db.QueryContext(ctx,
 		"SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME",
-		src,
+		dbName,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("list triggers: %w", err)
+		return nil, fmt.Errorf("list triggers: %w", err)
 	}
 	defer rows.Close()
 
-	var triggers []string
+	var names []string
 	for rows.Next() {
 		var t string
 		if err := rows.Scan(&t); err != nil {
-			return 0, err
+			return nil, err
 		}
-		triggers = append(triggers, t)
+		names = append(names, t)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	if len(triggers) == 0 {
-		return 0, nil
-	}
-
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf("USE `%s`", dst)); err != nil {
-		return 0, fmt.Errorf("use database %s: %w", dst, err)
-	}
-
-	for _, t := range triggers {
+	defs := make([]triggerDef, 0, len(names))
+	for _, t := range names {
 		// MySQL 8: SHOW CREATE TRIGGER → Trigger, sql_mode, SQL Original Statement,
 		// character_set_client, collation_connection, Database Collation, Created
 		var trigName, sqlMode, createStmt, charset, collation, dbCollation string
 		var created interface{}
 		if err := o.db.QueryRowContext(ctx,
-			fmt.Sprintf("SHOW CREATE TRIGGER `%s`.`%s`", src, t),
+			fmt.Sprintf("SHOW CREATE TRIGGER `%s`.`%s`", dbName, t),
 		).Scan(&trigName, &sqlMode, &createStmt, &charset, &collation, &dbCollation, &created); err != nil {
-			return 0, fmt.Errorf("show create trigger %s: %w", t, err)
+			return nil, fmt.Errorf("show create trigger %s: %w", t, err)
 		}
-		if _, err := conn.ExecContext(ctx, createStmt); err != nil {
-			return 0, fmt.Errorf("create trigger %s: %w", t, err)
+		defs = append(defs, triggerDef{name: t, createStmt: createStmt})
+	}
+	return defs, nil
+}
+
+// copyTriggers copies all triggers from src to dst. Triggers reference tables
+// by short name, so executing under "USE dst" is sufficient to bind them to the
+// new database. Returns the number of triggers copied.
+func (o *Operations) copyTriggers(ctx context.Context, conn *sql.Conn, src, dst string) (int, error) {
+	defs, err := o.loadTriggers(ctx, src)
+	if err != nil {
+		return 0, err
+	}
+	if len(defs) == 0 {
+		return 0, nil
+	}
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("USE `%s`", dst)); err != nil {
+		return 0, fmt.Errorf("use database %s: %w", dst, err)
+	}
+	for _, d := range defs {
+		if _, err := conn.ExecContext(ctx, d.createStmt); err != nil {
+			return 0, fmt.Errorf("create trigger %s: %w", d.name, err)
 		}
 	}
-	return len(triggers), nil
+	return len(defs), nil
 }
 
 // copyRoutines copies all stored procedures and functions from src to dst.
@@ -338,7 +358,14 @@ func (o *Operations) copyRoutines(ctx context.Context, conn *sql.Conn, src, dst 
 	return len(routines), nil
 }
 
-// RenameDB renames src to dst by moving all tables then dropping the empty src.
+// RenameDB moves src to dst: tables are renamed, triggers/views/routines are
+// recreated in dst, then the now-empty src schema is dropped.
+//
+// MySQL forbids RENAME TABLE across databases when the table has triggers
+// (error 1435). Triggers are therefore dropped from src first and recreated
+// in dst after the rename. Views and routines are still in src at that point
+// (RENAME TABLE only moves tables) and are copied before DROP DATABASE removes
+// them.
 func (o *Operations) RenameDB(ctx context.Context, src, dst string) (err error) {
 	ctx, span := tracer.Start(ctx, "RenameDB")
 	span.SetAttributes(attribute.String("db.system", "mysql"), attribute.String("src", src), attribute.String("dst", dst))
@@ -353,6 +380,17 @@ func (o *Operations) RenameDB(ctx context.Context, src, dst string) (err error) 
 	start := time.Now()
 	slog.Debug("renaming database", "src", src, "dst", dst)
 
+	// Save trigger DDLs before dropping — needed to recreate in dst.
+	triggers, err := o.loadTriggers(ctx, src)
+	if err != nil {
+		return err
+	}
+	for _, t := range triggers {
+		if _, err := o.db.ExecContext(ctx, fmt.Sprintf("DROP TRIGGER `%s`.`%s`", src, t.name)); err != nil {
+			return fmt.Errorf("drop trigger %s: %w", t.name, err)
+		}
+	}
+
 	if _, err := o.db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE `%s`", dst)); err != nil {
 		return fmt.Errorf("create database %s: %w", dst, err)
 	}
@@ -361,7 +399,6 @@ func (o *Operations) RenameDB(ctx context.Context, src, dst string) (err error) 
 	if err != nil {
 		return err
 	}
-
 	for _, tbl := range tables {
 		if _, err := o.db.ExecContext(ctx,
 			fmt.Sprintf("RENAME TABLE `%s`.`%s` TO `%s`.`%s`", src, tbl, dst, tbl),
@@ -370,11 +407,42 @@ func (o *Operations) RenameDB(ctx context.Context, src, dst string) (err error) 
 		}
 	}
 
+	// Recreate triggers, views, and routines in dst.
+	// Views and routines are still in src at this point; DROP DATABASE below removes them.
+	conn, err := o.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("USE `%s`", dst)); err != nil {
+		return fmt.Errorf("use database %s: %w", dst, err)
+	}
+	for _, t := range triggers {
+		if _, err := conn.ExecContext(ctx, t.createStmt); err != nil {
+			return fmt.Errorf("create trigger %s: %w", t.name, err)
+		}
+	}
+
+	viewCount, err := o.copyViews(ctx, conn, src, dst)
+	if err != nil {
+		return err
+	}
+	routineCount, err := o.copyRoutines(ctx, conn, src, dst)
+	if err != nil {
+		return err
+	}
+
 	if _, err := o.db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE `%s`", src)); err != nil {
 		return fmt.Errorf("drop database %s: %w", src, err)
 	}
 
-	slog.Info("database renamed", "src", src, "dst", dst, "tables", len(tables), "duration", time.Since(start))
+	slog.Info("database renamed",
+		"src", src, "dst", dst,
+		"tables", len(tables), "triggers", len(triggers),
+		"views", viewCount, "routines", routineCount,
+		"duration", time.Since(start),
+	)
 	return nil
 }
 
@@ -647,6 +715,29 @@ func (g *gzipReadCloser) Read(p []byte) (int, error) { return g.gr.Read(p) }
 func (g *gzipReadCloser) Close() error {
 	g.gr.Close()
 	return g.f.Close()
+}
+
+// listRegularColumns returns column names for a table, excluding generated columns.
+// MySQL rejects explicit values for generated columns in INSERT statements.
+func (o *Operations) listRegularColumns(ctx context.Context, dbName, tableName string) ([]string, error) {
+	rows, err := o.db.QueryContext(ctx,
+		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND EXTRA NOT IN ('VIRTUAL GENERATED', 'STORED GENERATED') ORDER BY ORDINAL_POSITION",
+		dbName, tableName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list columns for %s.%s: %w", dbName, tableName, err)
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		cols = append(cols, c)
+	}
+	return cols, rows.Err()
 }
 
 func (o *Operations) listTables(ctx context.Context, dbName string) ([]string, error) {
