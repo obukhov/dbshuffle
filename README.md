@@ -5,17 +5,14 @@ dbshuffle pre-creates copies of MySQL database templates so they can be assigned
 ## Table of contents
 
 - [How it works](#how-it-works)
-- [Project structure](#project-structure)
 - [Configuration](#configuration)
 - [Observability](docs/observability.md)
-- [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [CLI reference](docs/cli.md)
 - [HTTP API](docs/api.md)
 - [Helm chart](docs/helm.md)
-- [Docker / local development](#docker--local-development)
 - [Management database](#management-database)
-- [Makefile targets](#makefile-targets)
+- [Development & contribution](docs/development.md)
 
 ## How it works
 
@@ -26,21 +23,6 @@ dbshuffle pre-creates copies of MySQL database templates so they can be assigned
 5. Running **refill** (or letting the server do it in the background) tops the buffer back up.
 
 All state is tracked in the `_dbshuffle.databases` management table.
-
-## Project structure
-
-```
-cmd/main.go                  single binary — all commands live here
-internal/
-  config/config.go           YAML config loading
-  db/db.go                   MySQL connection + schema bootstrap
-  db/operations.go           CopyDB / RenameDB / DropDB (raw SQL, no ORM)
-  service/shuffle.go         business logic: Status, Assign, Clean, Refill
-  handler/shuffle.go         HTTP handlers delegating to service
-docker/mysql/init/           SQL scripts run on first container start
-config.yaml                  template configuration
-docker-compose.yml           MySQL 8 service for local development
-```
 
 ## Configuration
 
@@ -66,11 +48,6 @@ Each template requires exactly one source — `from_db` or `from_path`, not both
 Traces, metrics, and logs via OpenTelemetry. Disabled by default; enabled entirely through env vars — no code changes required.
 
 See **[docs/observability.md](docs/observability.md)** for env var reference, quick-start examples, and details on what is traced and measured.
-
-## Prerequisites
-
-- Go 1.21+
-- Docker + Docker Compose (for local MySQL)
 
 ## Quick start
 
@@ -109,23 +86,6 @@ Install from OCI registry; configure MySQL connection, template definitions, and
 
 See **[docs/helm.md](docs/helm.md)** for the full values reference, connection setup, and OTel configuration example.
 
-## Docker / local development
-
-```bash
-make db-up       # start MySQL 8 in Docker (detached)
-make db-down     # stop the MySQL container
-make db-shell    # open a mysql shell as root
-```
-
-The container mounts `docker/mysql/init/` — any `.sql` files there run automatically on first start. The included `01_templates.sql` creates `_template_blog` and `_template_shop` with seed data.
-
-To reset the database volume entirely:
-
-```bash
-docker compose down -v
-make db-up
-```
-
 ## Management database
 
 dbshuffle stores state in `_dbshuffle.databases`:
@@ -141,18 +101,6 @@ dbshuffle stores state in `_dbshuffle.databases`:
 
 The physical MySQL database name of a buffer copy is derived as `<template_name>_<uuid_no_hyphens>` and never stored explicitly.
 
-## Makefile targets
+## Development & contribution
 
-| Target | Description |
-|---|---|
-| `make build` | Compile binary to `bin/dbshuffle` |
-| `make run-server` | Run the HTTP server via `go run` |
-| `make status` | Print current status |
-| `make assign TEMPLATE=x DB=y` | Assign template `x` to database name `y` |
-| `make reset TEMPLATE=x DB=y` | Drop existing assignment and assign a fresh copy |
-| `make clean` | Drop expired databases |
-| `make refill` | Fill buffers up to configured size |
-| `make db-up` | Start MySQL in Docker |
-| `make db-down` | Stop MySQL container |
-| `make db-shell` | Open mysql CLI shell |
-| `make tidy` | Run `go mod tidy` |
+See **[docs/development.md](docs/development.md)** for prerequisites, project structure, local MySQL setup, test template descriptions, and the full Makefile reference.
