@@ -21,6 +21,21 @@ config.yaml                  template configuration
 docker-compose.yml           MySQL 8 service for local development
 ```
 
+## Management database
+
+dbshuffle stores state in `_dbshuffle.databases`:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `CHAR(36)` | UUID v4 primary key |
+| `template_name` | `VARCHAR(255)` | Which template this copy belongs to |
+| `db_name` | `VARCHAR(255) NULL` | `NULL` = in buffer; value = assigned name |
+| `created_at` | `DATETIME` | When the buffer copy was created |
+| `assigned_at` | `DATETIME NULL` | When it was assigned |
+| `last_extended_at` | `DATETIME NULL` | Used to compute expiry: `last_extended_at + expire hours` |
+
+The physical MySQL database name of a buffer copy is derived as `<template_name>_<uuid_no_hyphens>` and never stored explicitly.
+
 ## Local MySQL
 
 Start and stop the development database:
